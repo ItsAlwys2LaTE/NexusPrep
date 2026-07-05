@@ -1,6 +1,8 @@
-# NexusPrep
+# [NexusPrep](https://nexus-prep-navy.vercel.app/)
 
 **The Intelligent Academic Strategist**
+
+🔗 **Live app:** [nexus-prep-navy.vercel.app](https://nexus-prep-navy.vercel.app/) — frontend on Vercel, backend on Render, database on MongoDB Atlas.
 
 NexusPrep is an AI-driven educational platform that converts raw academic material — textbooks, lecture notes, formula sheets, and previous year question papers — into interactive, data-driven study experiences. It combines OCR-backed document ingestion, Google Gemini-powered content extraction, KaTeX-rendered mathematics, and an Ebbinghaus-curve spaced-repetition engine, with all user data, statistics, and flashcard decks persisted centrally in MongoDB for full cross-device access.
 
@@ -47,7 +49,8 @@ There is no separate database layer or ORM — the backend talks to MongoDB dire
 
 | Feature | Description |
 |---|---|
-| Email/OTP registration | 6-digit OTP emailed via Gmail SMTP, 10-minute expiry, required to complete registration |
+| Email/OTP registration | 6-digit OTP emailed via the Brevo transactional email API, 10-minute expiry, required to complete registration |
+| Resend OTP | A 60-second cooldown on the OTP screen, after which the user can request a fresh code without leaving the flow |
 | Password reset | Generates and emails a new random temporary password |
 | Personalized AI context | Optional per-user context (age, education level) injected into every Gemini prompt |
 | Normal Mode analysis | Chapter summary, key formulas, and flashcards from up to 5 PDFs |
@@ -97,14 +100,14 @@ The frontend holds no persistent client-side state beyond the current session (`
 
 ### Backend
 - **FastAPI** — async HTTP framework, served by **Uvicorn**
+- **python-multipart** — required by FastAPI to parse the `multipart/form-data` file uploads used by `/api/summarize` and `/api/exam-strategy`
 - **Motor** (`AsyncIOMotorClient`) — async MongoDB driver
 - **PyMuPDF (`fitz`)** — native PDF text extraction
 - **Pillow (`PIL`)** — rasterizes PDF pages to images for the OCR fallback path
-- **google-generativeai** SDK — used for document validation and OCR calls
-- **aiohttp** — used for the heavier structured-JSON generation calls (with manual retry/backoff, bypassing the SDK)
+- **google-generativeai** SDK — used for document validation and OCR calls (Google has deprecated this SDK in favor of `google.genai`; it still functions, but a future migration is worth planning)
+- **aiohttp** — used both for the heavier structured-JSON Gemini calls (manual retry/backoff, bypassing the SDK) and for dispatching transactional email via the Brevo HTTP API
 - **json-repair** — tolerantly parses AI-generated JSON that may contain minor formatting issues
 - **certifi** — TLS certificate bundle for the MongoDB Atlas connection
-- **smtplib / email.mime** (standard library) — SMTP dispatch for OTPs, password resets, and revision reminders
 - **hashlib** (standard library) — SHA-256 password hashing
 - **uuid** (standard library) — deck ID generation
 
@@ -123,7 +126,9 @@ The frontend holds no persistent client-side state beyond the current session (`
 All backend logic lives in a single `main.py` module, organized into clearly delimited sections.
 
 ### 5.1 Email Sender Utility
-`send_email(to_email, subject, message_body)` sends plain-text email via `smtplib.SMTP_SSL` to `smtp.gmail.com:465`, authenticated with a Gmail App Password read from environment variables. If credentials are missing, it logs a warning and no-ops rather than raising — auth and deck endpoints remain functional even without SMTP configured (users just won't receive OTP/reminder emails).
+`send_email(to_email, subject, message_body)` is an async function that sends plain-text email via the **Brevo** transactional email HTTP API (`POST https://api.brevo.com/v3/smtp/email`), authenticated with a `BREVO_API_KEY` and sent from a single Brevo-verified sender address (`BREVO_FROM_EMAIL`) — no domain ownership required, just a verified sender. It returns `True`/`False` rather than silently swallowing failures, and every caller (OTP send, password reset, reminder dispatch) checks that result and raises a proper error if the send genuinely failed, so a misconfigured or rejected email is never reported to the user as a false "success."
+
+This replaced an earlier `smtplib`-based Gmail SMTP implementation, which worked locally but silently failed in production: most PaaS hosts (Render included) block outbound SMTP ports (25/465/587) on all plans to prevent spam abuse, so the switch to an HTTP-based email API was necessary for the hosted deployment to actually deliver mail.
 
 ### 5.2 Gemini API Key Configuration & Fallback Logic
 Two API keys (`GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, falling back to a shared `GEMINI_API_KEY`) allow the two halves of a single request (e.g. summary + definitions) to be dispatched under separate keys/quotas concurrently.
@@ -175,7 +180,7 @@ Both generation endpoints follow the same overall shape: extract text → run a 
 | `FormattedText` | Splits arbitrary AI-generated prose on `$...$` / `$$...$$` boundaries, strips markdown bold markers, strips any dangling unmatched `$$`, and renders each math segment through `MathRenderer` |
 | `DynamicBackground` | Ambient animated three.js particle/geometry background, pausable |
 | `StatPopCard`, `UploadCard`, `ProcessingIndicator`, `EbbinghausCurve`, `NexusLogo` | Presentational building blocks used across views |
-| `AuthView` | Login, registration (with OTP step), and password-reset flows |
+| `AuthView` | Login, registration (with OTP step + 60s resend cooldown), and password-reset flows |
 | `HomeView` / `ResultsDashboardView` | Normal Mode upload UI and results dashboard (summary, formulas, quiz/flashcard launch) |
 | `ExamModeView` / `ExamResultsDashboard` / `QuestionAccordion` | Exam Mode upload UI (separate Notes/PYQs dropzones) and its results dashboard |
 | `QuizView` | Interactive MCQ quiz runner with scoring |
@@ -320,7 +325,7 @@ Formulas, variables, and Greek letters generated by the AI are wrapped in inline
 - Python 3.10+
 - A MongoDB cluster URI (e.g. MongoDB Atlas)
 - One or two Google Gemini API keys
-- A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled (for OTP/reset/reminder emails)
+- A [Brevo](https://www.brevo.com) account with a verified sender email (for OTP/reset/reminder emails) — free tier, no domain required
 
 ### 11.1 Backend Setup
 
@@ -329,8 +334,7 @@ Formulas, variables, and Greek letters generated by the AI are wrapped in inline
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
-pip install fastapi uvicorn motor python-dotenv google-generativeai \
-            aiohttp pillow pymupdf certifi json-repair
+pip install -r requirements.txt
 ```
 
 Create a `.env` file in the backend root:
@@ -343,9 +347,9 @@ MONGODB_URL=mongodb+srv://<username>:<password>@cluster.mongodb.net/?retryWrites
 GEMINI_API_KEY_1=your_primary_gemini_key
 GEMINI_API_KEY_2=your_secondary_gemini_key_for_load_balancing
 
-# Email Dispatch (SMTP)
-SMTP_EMAIL=your_email@gmail.com
-SMTP_APP_PASSWORD=your_16_digit_google_app_password
+# Email Dispatch (Brevo API)
+BREVO_API_KEY=your_brevo_api_key
+BREVO_FROM_EMAIL=your_verified_sender@example.com
 ```
 
 Start the server:
@@ -364,7 +368,10 @@ npm install
 npm install three lucide-react
 ```
 
-> **Note:** the frontend currently points at the backend via a hardcoded `API_BASE = "http://127.0.0.1:8000/api"` constant at the top of `App.jsx`, rather than a Vite environment variable. For local development against a backend on the default port, no changes are needed. If you deploy the backend elsewhere, update this constant directly (or refactor it to read from `import.meta.env.VITE_API_BASE` if you want it configurable per-environment).
+The frontend reads the backend URL from `import.meta.env.VITE_API_BASE`, falling back to `http://127.0.0.1:8000/api` if unset — so local development works with zero configuration. To point it at a different backend, create a `frontend/.env.local` with:
+```dotenv
+VITE_API_BASE=http://127.0.0.1:8000/api
+```
 
 Start the dev server:
 
@@ -374,9 +381,12 @@ npm run dev
 
 ### 11.3 Verifying the Setup
 1. Open the frontend URL printed by Vite (typically `http://localhost:5173`).
-2. Register a new account — confirm the OTP email arrives.
+2. Register a new account — confirm the OTP email arrives (and that "Resend OTP" works after the 60s cooldown).
 3. Upload a sample study PDF in Normal Mode and confirm a summary, formulas, and flashcards are generated.
 4. Open the flashcards, complete a revision, and check the Profile → Saved Decks tab to confirm the deck (and its updated revision schedule) round-trips through MongoDB.
+
+### 11.4 Production Deployment
+The live instance runs on **Vercel** (frontend) + **Render** (backend) + **MongoDB Atlas** (database). See `DEPLOYMENT_GUIDE.md` for the full step-by-step (repo setup, environment variables per host, MongoDB network access, CORS tightening) and `BREVO_SETUP_GUIDE.md` for the transactional email provider setup specifically.
 
 ---
 
@@ -387,10 +397,10 @@ npm run dev
 | `MONGODB_URL` | Yes | All DB-backed routes | MongoDB connection string |
 | `GEMINI_API_KEY_1` (or `GEMINI_API_KEY`) | Yes | AI generation & OCR | Primary Gemini API key |
 | `GEMINI_API_KEY_2` | No (falls back to key 1) | AI generation | Secondary key, used for the second concurrent generation task to spread quota usage |
-| `SMTP_EMAIL` | No* | `send_email` | Gmail address used to send OTP/reset/reminder emails |
-| `SMTP_APP_PASSWORD` | No* | `send_email` | Gmail App Password for the above account |
+| `BREVO_API_KEY` | No* | `send_email` | API key from Brevo → SMTP & API → API Keys |
+| `BREVO_FROM_EMAIL` | No* | `send_email` | The sender address verified in Brevo → Senders |
 
-\* SMTP variables are not strictly required for the app to boot, but OTP-based registration, password reset, and revision reminder emails will silently no-op without them.
+\* Brevo variables are not strictly required for the app to boot, but OTP-based registration, password reset, and revision reminder emails will fail with a clear `500` error (rather than silently no-op) if they're missing or invalid.
 
 ---
 
@@ -399,13 +409,16 @@ npm run dev
 ```
 nexusprep/
 ├── backend/
-│   ├── main.py            # FastAPI app: auth, profile, decks, AI endpoints
-│   └── .env                # MongoDB URL, Gemini keys, SMTP credentials (not committed)
-└── frontend/
-    ├── src/
-    │   └── App.jsx          # Entire SPA: views, components, state, API calls
-    ├── index.html
-    └── package.json
+│   ├── main.py              # FastAPI app: auth, profile, decks, AI endpoints
+│   ├── requirements.txt     # pip install -r requirements.txt
+│   └── .env                 # MongoDB URL, Gemini keys, Brevo credentials (not committed)
+├── frontend/
+│   ├── src/
+│   │   └── App.jsx          # Entire SPA: views, components, state, API calls
+│   ├── index.html
+│   └── package.json
+├── DEPLOYMENT_GUIDE.md       # Step-by-step Render + Vercel deployment walkthrough
+└── BREVO_SETUP_GUIDE.md      # Step-by-step Brevo transactional email setup
 ```
 
 ---
