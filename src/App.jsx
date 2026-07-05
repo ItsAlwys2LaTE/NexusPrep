@@ -365,6 +365,13 @@ function AuthView({ onLoginSuccess }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setTimeout(() => setResendCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCooldown]);
 
   useEffect(() => {
     const timer = setTimeout(() => setShowSplash(false), 2500);
@@ -420,7 +427,22 @@ function AuthView({ onLoginSuccess }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not send OTP");
       setView('register-otp');
-      setSuccessMsg("An OTP has been sent to your email!");
+      setSuccessMsg(`OTP sent to ${email} successfully!`);
+      setResendCooldown(60);
+    } catch (err) { setError(err.message); } finally { setLoading(false); }
+  };
+
+  const handleResendOtp = async () => {
+    if (resendCooldown > 0 || loading) return;
+    setLoading(true); setError(''); setSuccessMsg('');
+    try {
+      const res = await fetch(`${API_BASE}/auth/send-otp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not resend OTP");
+      setSuccessMsg(`OTP sent to ${email} successfully!`);
+      setResendCooldown(60);
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   };
 
@@ -596,6 +618,13 @@ function AuthView({ onLoginSuccess }) {
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-700 delay-100 fill-mode-both">
               <label className={labelClasses}>Verification Code</label>
               <input type="text" required value={otp} onChange={(e)=>setOtp(e.target.value.replace(/\D/g, ''))} maxLength={6} className={`${inputClasses} text-xl text-center tracking-[0.5em] py-3 font-black placeholder:tracking-normal placeholder:font-semibold placeholder:text-sm`} placeholder="Enter 6 digits" />
+              <div className="mt-2 text-center text-xs font-bold">
+                {resendCooldown > 0 ? (
+                  <span className="text-slate-400">Resend OTP in {resendCooldown}s</span>
+                ) : (
+                  <button type="button" onClick={handleResendOtp} disabled={loading} className="text-indigo-600 hover:text-indigo-500 transition-colors disabled:opacity-60">Resend OTP</button>
+                )}
+              </div>
             </div>
 
             <div className="pt-2 animate-in fade-in slide-in-from-bottom-4 duration-700 delay-200 fill-mode-both">
@@ -628,7 +657,7 @@ function AuthView({ onLoginSuccess }) {
           {view === 'login' ? (
             <p>Don't have an account? <button type="button" onClick={() => { setView('register-details'); setError(''); }} className="text-indigo-600 hover:text-indigo-500 transition-colors ml-1">Sign up</button></p>
           ) : view === 'register-details' || view === 'register-otp' ? (
-            <p>Already have an account? <button type="button" onClick={() => { setView('login'); setError(''); setSuccessMsg(''); }} className="text-indigo-600 hover:text-indigo-500 transition-colors ml-1">Log in</button></p>
+            <p>Already have an account? <button type="button" onClick={() => { setView('login'); setError(''); setSuccessMsg(''); setResendCooldown(0); }} className="text-indigo-600 hover:text-indigo-500 transition-colors ml-1">Log in</button></p>
           ) : (
             <button type="button" onClick={() => { setView('login'); setError(''); setSuccessMsg(''); }} className="text-slate-600 hover:text-slate-900 transition-colors flex items-center justify-center gap-2 w-full"><ArrowRight className="rotate-180" size={16}/> Back to login</button>
           )}

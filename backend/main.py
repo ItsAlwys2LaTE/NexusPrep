@@ -5,11 +5,8 @@ import asyncio
 import aiohttp
 import random
 import string
-import smtplib
 import logging
 from contextlib import asynccontextmanager
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
 import google.generativeai as genai
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -53,24 +50,35 @@ app.add_middleware(
 # ============================================================================
 # 📂 EMAIL SENDER UTILITY
 # ============================================================================
-def send_email(to_email: str, subject: str, message_body: str):
-    sender_email = os.getenv("SMTP_EMAIL")
-    sender_password = os.getenv("SMTP_APP_PASSWORD")
-    if not sender_email or not sender_password:
-        print("[Error] SMTP credentials missing. Email not sent.")
-        return
+async def send_email(to_email: str, subject: str, message_body: str) -> bool:
+    api_key = os.getenv("BREVO_API_KEY")
+    from_email = os.getenv("BREVO_FROM_EMAIL")
+    if not api_key or not from_email:
+        print("[Error] BREVO_API_KEY or BREVO_FROM_EMAIL missing. Email not sent.")
+        return False
 
-    msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = to_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(message_body, 'plain'))
+    payload = {
+        "sender": {"email": from_email, "name": "NexusPrep"},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "textContent": message_body,
+    }
+    headers = {
+        "api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.brevo.com/v3/smtp/email", json=payload, headers=headers) as resp:
+                if resp.status in (200, 201):
+                    return True
+                body_text = await resp.text()
+                print(f"[Error] Brevo API returned {resp.status}: {body_text}")
+                return False
     except Exception as e:
-        print(f"[Error] Failed to send email: {e}")
+        print(f"[Error] Failed to send email via Brevo: {e}")
+        return False
 
 # ============================================================================
 # 📂 API KEY CONFIGURATION & BACKOFF LOGIC
@@ -233,8 +241,10 @@ async def send_otp(data: SendOTPModel):
     )
     
     body = f"Welcome to NexusPrep!\n\nYour 6-digit verification code is: {otp_code}\n\nThis code will expire in 10 minutes.\nDo not share this code with anyone."
-    send_email(data.email, "NexusPrep - Your Verification Code", body)
-    
+    email_sent = await send_email(data.email, "NexusPrep - Your Verification Code", body)
+    if not email_sent:
+        raise HTTPException(status_code=500, detail="Could not send the verification email. Please try again shortly, or contact support if this persists.")
+
     return {"status": "success", "message": "OTP sent to your email."}
 
 @app.post("/api/auth/register")
@@ -311,8 +321,10 @@ async def reset_password(data: ResetModel):
     )
     
     body = f"Hello,\n\nYou requested a password reset for your NexusPrep account.\n\nWe have generated a new secure temporary password for you: {new_pass}\n\nPlease log in using this password and immediately update it in your Profile Settings -> Account Management page."
-    send_email(data.email, "NexusPrep - Password Reset Request", body)
-    
+    email_sent = await send_email(data.email, "NexusPrep - Password Reset Request", body)
+    if not email_sent:
+        raise HTTPException(status_code=500, detail="Your password was reset, but the confirmation email could not be sent. Please contact support to retrieve your new password.")
+
     return {"status": "success", "message": "A new password has been generated and sent to your email."}
 
 @app.put("/api/profile/update")
@@ -352,7 +364,9 @@ async def dispatch_reminder(data: ReminderDispatchModel):
     if not user or not user.get("emailReminders", True) or not user.get("storeFlashcards", True):
         return {"status": "skipped", "message": "User opted out of reminders or flashcard storage."}
     
-    send_email(data.email, data.subject, data.message)
+    email_sent = await send_email(data.email, data.subject, data.message)
+    if not email_sent:
+        raise HTTPException(status_code=500, detail="Failed to dispatch reminder email.")
     return {"status": "success", "message": "Reminder dispatched."}
 
 # ============================================================================
