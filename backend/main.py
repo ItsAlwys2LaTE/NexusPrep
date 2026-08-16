@@ -89,7 +89,8 @@ api_key_2 = os.getenv("GEMINI_API_KEY_2", api_key_1)
 if api_key_1:
     genai.configure(api_key=api_key_1)
 
-ACTIVE_MODELS = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash"]
+# UPDATED: Primary model is now 3.6-flash, fallback is 3.5-flash-lite
+ACTIVE_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
 async def call_gemini_with_fallback(contents) -> str:
     for model_name in ACTIVE_MODELS:
@@ -192,7 +193,6 @@ class ProfileUpdateModel(BaseModel):
     educationLevel: str
     educationSubOption: str
     usePersonalContext: bool
-    storeFlashcards: bool = True
     emailReminders: bool = True
     newPassword: str = ""
 
@@ -273,7 +273,6 @@ async def register_user(data: RegisterModel):
         "educationLevel": data.educationLevel,
         "educationSubOption": data.educationSubOption,
         "usePersonalContext": True,
-        "storeFlashcards": True,
         "emailReminders": True,
         "studyStreak": 1,
         "totalCardsLearned": 0,
@@ -335,7 +334,6 @@ async def update_profile(data: ProfileUpdateModel):
         "educationLevel": data.educationLevel,
         "educationSubOption": data.educationSubOption,
         "usePersonalContext": data.usePersonalContext,
-        "storeFlashcards": data.storeFlashcards,
         "emailReminders": data.emailReminders
     }
     if data.newPassword:
@@ -361,8 +359,8 @@ async def increment_stat(data: StatUpdateModel):
 async def dispatch_reminder(data: ReminderDispatchModel):
     user = await users_collection.find_one({"email": data.email})
     
-    if not user or not user.get("emailReminders", True) or not user.get("storeFlashcards", True):
-        return {"status": "skipped", "message": "User opted out of reminders or flashcard storage."}
+    if not user or not user.get("emailReminders", True):
+        return {"status": "skipped", "message": "User opted out of reminders."}
     
     email_sent = await send_email(data.email, data.subject, data.message)
     if not email_sent:

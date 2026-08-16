@@ -1247,7 +1247,6 @@ function ProfileView({ isDark, userData, setUserData, profileTab, onLogout, onLa
     educationLevel: userData?.educationLevel || '',
     educationSubOption: userData?.educationSubOption || '',
     usePersonalContext: userData?.usePersonalContext ?? true,
-    storeFlashcards: userData?.storeFlashcards ?? true,
     emailReminders: userData?.emailReminders ?? true,
     newPassword: ''
   });
@@ -1262,7 +1261,6 @@ function ProfileView({ isDark, userData, setUserData, profileTab, onLogout, onLa
     setFormData(prev => ({
       ...prev, ...userData, 
       usePersonalContext: userData?.usePersonalContext ?? true,
-      storeFlashcards: userData?.storeFlashcards ?? true,
       emailReminders: userData?.emailReminders ?? true
     })); 
     
@@ -1391,7 +1389,7 @@ function ProfileView({ isDark, userData, setUserData, profileTab, onLogout, onLa
               </div>
             </div>
             
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
               <div className={`p-5 rounded-2xl border flex flex-col justify-between ${isDark ? 'bg-indigo-900/20 border-indigo-500/30' : 'bg-indigo-50 border-indigo-200'}`}>
                 <div className="mb-4">
                   <h4 className={`font-bold flex items-center gap-2 ${isDark ? 'text-indigo-300' : 'text-indigo-800'}`}><Sparkles size={18}/> Personal Context</h4>
@@ -1401,18 +1399,8 @@ function ProfileView({ isDark, userData, setUserData, profileTab, onLogout, onLa
                   <div className={`w-5 h-5 bg-white rounded-full absolute top-1 transition-transform ${formData.usePersonalContext ? 'translate-x-8' : 'translate-x-1'}`} />
                 </button>
               </div>
-              
-              <div className={`p-5 rounded-2xl border flex flex-col justify-between ${isDark ? 'bg-amber-900/20 border-amber-500/30' : 'bg-amber-50 border-amber-200'}`}>
-                <div className="mb-4">
-                  <h4 className={`font-bold flex items-center gap-2 ${isDark ? 'text-amber-300' : 'text-amber-800'}`}><Database size={18}/> Local Deck Storage</h4>
-                  <p className={`text-sm mt-1 ${isDark ? 'text-amber-200/70' : 'text-amber-900/70'}`}>Automatically save generated flashcards to your device for Spaced Repetition.</p>
-                </div>
-                <button type="button" onClick={() => setFormData({...formData, storeFlashcards: !formData.storeFlashcards})} className={`w-14 h-7 shrink-0 rounded-full transition-colors relative ${formData.storeFlashcards ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
-                  <div className={`w-5 h-5 bg-white rounded-full absolute top-1 transition-transform ${formData.storeFlashcards ? 'translate-x-8' : 'translate-x-1'}`} />
-                </button>
-              </div>
 
-              <div className={`p-5 rounded-2xl border flex flex-col justify-between ${!formData.storeFlashcards ? 'opacity-50 pointer-events-none' : ''} ${isDark ? 'bg-emerald-900/20 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200'}`}>
+              <div className={`p-5 rounded-2xl border flex flex-col justify-between ${isDark ? 'bg-emerald-900/20 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200'}`}>
                 <div className="mb-4">
                   <h4 className={`font-bold flex items-center gap-2 ${isDark ? 'text-emerald-300' : 'text-emerald-800'}`}><Bell size={18}/> Ebbinghaus Emails</h4>
                   <p className={`text-sm mt-1 ${isDark ? 'text-emerald-200/70' : 'text-emerald-900/70'}`}>Receive intelligent email reminders to revise cards based on Ebbinghaus Spaced Repetition.</p>
@@ -1605,7 +1593,7 @@ export default function App() {
   }, [userData]);
 
   useEffect(() => {
-    if (!userData?.email || userData.storeFlashcards === false) return;
+    if (!userData?.email) return;
 
     // One-time legacy localStorage -> cloud deck migration
     const legacyDecksKey = `smartstudy_decks_${userData.email}`;
@@ -1758,18 +1746,16 @@ export default function App() {
     setFlashcardData(generatedCards); 
     
     let newDeck = null;
-    if (userData?.storeFlashcards !== false) {
-       const deckTitle = data.title || sourceName.replace('.pdf', ''); 
-       try {
-         const res = await fetch(`${API_BASE}/flashcards/decks`, {
-           method: 'POST',
-           headers: { 'Content-Type': 'application/json' },
-           body: JSON.stringify({ email: userData.email, title: deckTitle, cards: generatedCards })
-         });
-         if (res.ok) newDeck = await res.json();
-       } catch (err) {
-         console.error('Failed to save deck to the cloud:', err);
-       }
+    const deckTitle = data.title || sourceName.replace('.pdf', ''); 
+    try {
+      const res = await fetch(`${API_BASE}/flashcards/decks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: userData.email, title: deckTitle, cards: generatedCards })
+      });
+      if (res.ok) newDeck = await res.json();
+    } catch (err) {
+      console.error('Failed to save deck to the cloud:', err);
     }
 
     setActiveDeck(newDeck);
