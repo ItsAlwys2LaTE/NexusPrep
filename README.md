@@ -62,7 +62,7 @@ There is no separate database layer or ORM — the backend talks to MongoDB dire
 | Legacy localStorage → cloud migration | One-time client-side import of any pre-existing local decks into MongoDB, idempotent by deck ID |
 | Quiz mode | Interactive MCQ quiz generated from Normal or Exam Mode output |
 | Study statistics | Per-user counters (docs processed, PYQs analyzed, strategies generated, quizzes taken, cards learned, study streak) |
-| AI resilience | Rolling fallback across three Gemini model versions with exponential backoff on rate limits |
+| AI resilience | Rolling fallback across primary and secondary Gemini models with exponential backoff on rate limits |
 | Inactivity auto-logout | Session cleared after 30 minutes of no user interaction, unless "stay signed in" was selected at login |
 
 ---
@@ -87,8 +87,9 @@ There is no separate database layer or ORM — the backend talks to MongoDB dire
                                                         │
                                         ┌───────────────▼───────────────┐
                                         │  Google Gemini API             │
-                                        │  (gemini-2.5-flash → 3.1-flash-│
-                                        │   lite → 3.5-flash fallback)   │
+                                        │  (gemini-3.6-flash primary →   │
+                                        │   gemini-3.5-flash-lite        │
+                                        │   secondary)                   │
                                         └────────────────────────────────┘
 ```
 
@@ -133,7 +134,7 @@ This replaced an earlier `smtplib`-based Gmail SMTP implementation, which worked
 ### 5.2 Gemini API Key Configuration & Fallback Logic
 Two API keys (`GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, falling back to a shared `GEMINI_API_KEY`) allow the two halves of a single request (e.g. summary + definitions) to be dispatched under separate keys/quotas concurrently.
 
-`ACTIVE_MODELS = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash"]` defines a rolling fallback array. Two distinct call paths exist:
+`ACTIVE_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]` defines a rolling fallback array — `gemini-3.6-flash` as the primary model, with `gemini-3.5-flash-lite` as the secondary fallback. Two distinct call paths exist:
 
 - **`call_gemini_with_fallback(contents)`** — uses the official SDK (`genai.GenerativeModel(...).generate_content_async`). Used for lightweight tasks: document-validity checks and OCR text extraction from page images. On any exception it moves to the next model in the array; if all models fail it raises a `500`.
 - **`fetch_gemini_json(prompt, api_key, retries=5)`** — uses raw `aiohttp` calls directly against the `generateContent` REST endpoint with `generationConfig.responseMimeType = "application/json"`, forcing Gemini's own constrained JSON output. Used for all heavy structured-content generation (summaries, formulas, definitions, exam strategy, quiz/QA). On HTTP 429 it retries with exponential backoff (`2^i + random jitter` seconds); on 404 or other non-200 statuses it moves to the next fallback model. The raw response text is parsed with `json_repair.loads(...)` rather than strict `json.loads`, tolerating minor AI-introduced formatting issues, and returns `{}` on unrecoverable parse failure rather than raising.
@@ -209,7 +210,6 @@ A simple in-memory notification queue (`notifications` state) surfaces transient
   "educationLevel": "string",
   "educationSubOption": "string",
   "usePersonalContext": true,
-  "storeFlashcards": true,
   "emailReminders": true,
   "studyStreak": 1,
   "totalCardsLearned": 0,
@@ -259,9 +259,9 @@ All routes are prefixed with `/api`. All request/response bodies are JSON unless
 | `POST` | `/auth/register` | `{ email, password, name, age, educationLevel, educationSubOption, otp }` | Validates OTP + expiry, creates the user document with default preference/statistic fields, deletes the consumed OTP. Returns the created user (minus password). |
 | `POST` | `/auth/login` | `{ email, password }` | Returns the full user document (minus password) on success, `401` otherwise. |
 | `POST` | `/auth/reset` | `{ email }` | Generates a random strong temporary password, emails it, and overwrites the stored password hash. |
-| `PUT` | `/profile/update` | `{ email, name, age, educationLevel, educationSubOption, usePersonalContext, storeFlashcards, emailReminders, newPassword? }` | Updates profile fields; if `newPassword` is non-empty, also updates the password hash. `404` if user not found. |
+| `PUT` | `/profile/update` | `{ email, name, age, educationLevel, educationSubOption, usePersonalContext, emailReminders, newPassword? }` | Updates profile fields; if `newPassword` is non-empty, also updates the password hash. `404` if user not found. |
 | `POST` | `/stats/increment` | `{ email, stat, value }` | Atomically `$inc`s an arbitrary numeric field on the user document (e.g. `docsProcessed`, `quizzesTaken`). |
-| `POST` | `/reminders/dispatch` | `{ email, message, subject? }` | Sends an email reminder, but only if the user hasn't opted out via `emailReminders` or `storeFlashcards`. |
+| `POST` | `/reminders/dispatch` | `{ email, message, subject? }` | Sends an email reminder, but only if the user hasn't opted out via `emailReminders`. |
 
 ### Flashcard Decks (Cloud Storage)
 
